@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, SessionLocal
 from .models import User, Message, ChannelConfig, Score
 from .config import get_config, set_config_key
-from .scoring import compute_user_score, emoji_density
+from .scoring import compute_user_score, compute_user_score_chatgpt, emoji_density, analyze_message_with_chatgpt
 
 load_dotenv()
 
@@ -92,6 +92,38 @@ async def on_message(message: discord.Message):
             session.add(m)
             user.last_seen_at = datetime.utcnow()
             session.commit()
+            
+            # Analyze message with ChatGPT and send response
+            if message.content and len(message.content.strip()) >= 3:  # Only analyze substantial messages
+                try:
+                    score_adjustment = analyze_message_with_chatgpt(message.content, message.author.display_name)
+                    
+                    # Create response based on ChatGPT analysis
+                    if score_adjustment == 1:
+                        response_text = "🎭 **PERFORMATIVE** - This message shows performative male culture vibes"
+                        color = 0xff6b6b  # Red for performative
+                    elif score_adjustment == -1:
+                        response_text = "💪 **NON-PERFORMATIVE** - This message shows toxically masculine vibes"
+                        color = 0x4ecdc4  # Teal for non-performative
+                    else:
+                        response_text = "😐 **NEUTRAL** - This message is neither performative nor non-performative"
+                        color = 0x95a5a6  # Gray for neutral
+                    
+                    # Create embed
+                    embed = discord.Embed(
+                        title="Perform-o-Meter Analysis",
+                        description=response_text,
+                        color=color
+                    )
+                    embed.set_footer(text=f"Analyzed message from {message.author.display_name}")
+                    
+                    # Send the analysis
+                    await message.channel.send(embed=embed)
+                    
+                except Exception as chatgpt_error:
+                    print(f"ChatGPT analysis error: {chatgpt_error}")
+                    # Don't send anything if ChatGPT fails to avoid spam
+                    
     except Exception as e:
         print("on_message error:", e)
 
@@ -143,18 +175,27 @@ async def deny_channel(interaction: discord.Interaction):
 @app_commands.describe(member="User to score", days="Window in days (1-60)")
 async def meter(interaction: discord.Interaction, member: discord.Member, days: app_commands.Range[int,1,60]=14):
     with SessionLocal() as session:
-        score, info = compute_user_score(session, member.id, days=days)
-    examples = "\n".join([f"• {e}" for e in info.get("examples", [])]) or "—"
+        score, info = compute_user_score_chatgpt(session, member.id, days=days)
+    
+    # Create embed with ChatGPT analysis results
     embed = discord.Embed(
         title=f"Perform-o-Meter: {member.display_name}",
         description=f"Score (last {days}d): **{score}/100**",
         color=discord.Color.blurple()
     )
-    for k in ("text_vibe", "links_media", "self_presentation", "engagement", "sincerity", "aesthetic"):
-        embed.add_field(name=k, value=str(info.get(k, 0)), inline=True)
-    if info.get("top_domains"):
-        embed.add_field(name="Top link domains", value=", ".join([f"{k} ({int(v)})" for k,v in info["top_domains"].items()]) or "—", inline=False)
-    embed.add_field(name="Top examples", value=examples, inline=False)
+    
+    # Add ChatGPT analysis breakdown
+    embed.add_field(name="Total Messages", value=str(info.get("total_messages", 0)), inline=True)
+    embed.add_field(name="Performative", value=str(info.get("performative_messages", 0)), inline=True)
+    embed.add_field(name="Non-Performative", value=str(info.get("non_performative_messages", 0)), inline=True)
+    embed.add_field(name="Neutral", value=str(info.get("neutral_messages", 0)), inline=True)
+    embed.add_field(name="Raw Score", value=str(info.get("raw_score", 0)), inline=True)
+    embed.add_field(name="Analysis", value=info.get("chatgpt_analysis", "No analysis"), inline=True)
+    
+    # Add examples
+    examples = "\n".join([f"• {e}" for e in info.get("examples", [])]) or "—"
+    embed.add_field(name="Message Examples", value=examples, inline=False)
+    
     await interaction.response.send_message(embed=embed)
 
 @tree.command(name="leaderboard", description="Top performative-ness (all users)")
@@ -171,7 +212,7 @@ async def leaderboard(interaction: discord.Interaction, days: app_commands.Range
             # Only include users who already exist in the database (have been analyzed)
             user = session.get(User, m.id)
             if user:
-                score, _ = compute_user_score(session, m.id, days=days)
+                score, _ = compute_user_score_chatgpt(session, m.id, days=days)
                 rows.append((m.display_name, score))
 
     rows.sort(key=lambda x: x[1], reverse=True)
@@ -183,10 +224,20 @@ async def leaderboard(interaction: discord.Interaction, days: app_commands.Range
 @app_commands.describe(member="User to explain", days="Window in days (1-60)")
 async def why(interaction: discord.Interaction, member: discord.Member, days: app_commands.Range[int,1,60]=14):
     with SessionLocal() as session:
-        score, info = compute_user_score(session, member.id, days=days)
-    detail = json.dumps({k:v for k,v in info.items() if k != "examples"}, indent=2)
+        score, info = compute_user_score_chatgpt(session, member.id, days=days)
+    
+    # Create detailed explanation with ChatGPT analysis
+    text = f"**{member.display_name} — {score}/100 (last {days}d)**\n\n"
+    text += f"**ChatGPT Analysis:**\n"
+    text += f"• Total Messages: {info.get('total_messages', 0)}\n"
+    text += f"• Performative: {info.get('performative_messages', 0)}\n"
+    text += f"• Non-Performative: {info.get('non_performative_messages', 0)}\n"
+    text += f"• Neutral: {info.get('neutral_messages', 0)}\n"
+    text += f"• Raw Score: {info.get('raw_score', 0)}\n\n"
+    
     examples = "\n".join([f"• {e}" for e in info.get("examples", [])]) or "—"
-    text = f"**{member.display_name} — {score}/100 (last {days}d)**\n```json\n{detail}\n```\n**Examples:**\n{examples}"
+    text += f"**Message Examples:**\n{examples}"
+    
     await interaction.response.send_message(text)
 
 # ---- Config commands ----

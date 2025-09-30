@@ -1,12 +1,19 @@
 from __future__ import annotations
-import re, math
+import re, math, os
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .models import Message
+from .models import Message, User
 from .config import get_config
+
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    print("Warning: OpenAI not available. Install with: pip install openai")
 
 def time_decay(days: float, half_life: float) -> float:
     return 0.5 ** (days / max(half_life, 0.1))
@@ -105,3 +112,130 @@ def compute_user_score(session: Session, user_id: int, days: int = 14) -> Tuple[
         weights.get("aesthetic", 0)*aesthetic
     )
     return round(score, 1), breakdown
+
+def analyze_message_with_chatgpt(message_text: str, user_display_name: str) -> int:
+    """
+    Analyze a message with ChatGPT and return a score adjustment.
+    Returns: +1 (performative), 0 (neutral), or -1 (sincere)
+    """
+    if not OPENAI_AVAILABLE:
+        return 0
+        
+    try:
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        prompt = f"""
+Analyze this Discord message for "performative male" culture vs "toxic masculinity":
+
+Message: "{message_text}"
+
+PERFORMATIVE indicators (respond with "PERFORMATIVE"):
+- Aesthetic lifestyle content (matcha, oat milk, cozy vibes)
+- Name-dropping trendy things (Clairo, Boygenius, Sally Rooney, Murakami)
+- Soft/emotional language ("in my feels", "soft launch", "main character energy")
+- Curated self-presentation (photo dumps, aesthetic posts)
+- Trying to appear cultured/trendy (book recommendations, music taste)
+- "That girl" energy but for men
+
+NON-PERFORMATIVE indicators (respond with "NON-PERFORMATIVE"):
+- Dark/edgy humor
+- Misogynistic language or attitudes
+- Homophobic or transphobic content
+- Arrogant/alpha male behavior
+- Toxic masculinity traits
+- "Sigma male" or "red pill" content
+- Dismissive of emotions or vulnerability
+
+NEUTRAL (respond with "NEUTRAL"):
+- Normal conversation
+- Questions or answers
+- Basic information sharing
+- Neither performative nor toxic
+
+Be decisive - most messages should be classified as either PERFORMATIVE or NON-PERFORMATIVE, not neutral.
+
+Respond with only: PERFORMATIVE, NON-PERFORMATIVE, or NEUTRAL
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=10,
+            temperature=0.7
+        )
+        
+        result = response.choices[0].message.content.strip().upper()
+        
+        if result == "PERFORMATIVE":
+            return 1
+        elif result == "NON-PERFORMATIVE":
+            return -1
+        else:  # NEUTRAL or any other response
+            return 0
+            
+    except Exception as e:
+        print(f"ChatGPT API error: {e}")
+        return 0  # Default to neutral on error
+
+def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14) -> Tuple[float, Dict]:
+    """
+    Compute user score using ChatGPT analysis instead of heuristics.
+    """
+    now = datetime.utcnow()
+    window_start = now - timedelta(days=days)
+    
+    msgs: List[Message] = (
+        session.query(Message)
+        .filter(Message.user_id == user_id, Message.created_at >= window_start)
+        .order_by(Message.created_at.desc())
+        .all()
+    )
+    
+    if not msgs:
+        return 0.0, {"examples": [], "chatgpt_analysis": "No messages"}
+    
+    # Get user display name for context
+    user = session.get(User, user_id)
+    display_name = f"User {user_id}"  # Fallback
+    
+    total_score = 0
+    performative_count = 0
+    non_performative_count = 0
+    neutral_count = 0
+    examples = []
+    
+    for m in msgs:
+        if not m.text or len(m.text.strip()) < 3:  # Skip very short messages
+            continue
+            
+        # Analyze with ChatGPT
+        score_adjustment = analyze_message_with_chatgpt(m.text, display_name)
+        total_score += score_adjustment
+        
+        # Track categories
+        if score_adjustment == 1:
+            performative_count += 1
+        elif score_adjustment == -1:
+            non_performative_count += 1
+        else:
+            neutral_count += 1
+            
+        # Collect examples
+        if len(examples) < 5:
+            examples.append(f"{m.text[:100]}... (score: {score_adjustment})")
+    
+    # Convert to 0-100 scale
+    # Base score of 50, then adjust based on ChatGPT analysis
+    final_score = max(0, min(100, 50 + (total_score * 2)))
+    
+    breakdown = {
+        "total_messages": len(msgs),
+        "performative_messages": performative_count,
+        "non_performative_messages": non_performative_count,
+        "neutral_messages": neutral_count,
+        "raw_score": total_score,
+        "examples": examples,
+        "chatgpt_analysis": f"Analyzed {len(msgs)} messages"
+    }
+    
+    return round(final_score, 1), breakdown

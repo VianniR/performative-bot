@@ -9,7 +9,8 @@ A playful, opt‑in bot that scores the “performative‑ness” of members (0�
 ## Features
 - Slash commands: `/optin`, `/optout`, `/allow_channel`, `/deny_channel`, `/meter`, `/leaderboard`, `/why`, `/config show`, `/config set …`
 - Channel allowlist + per‑user opt‑in (privacy‑first).
-- Explainable scoring with weights and token lists (editable in `config.yaml` or via `/config set`).
+- **ChatGPT-powered scoring**: Uses OpenAI's GPT-3.5-turbo to analyze messages for performative-ness
+- Explainable scoring with detailed breakdowns of performative vs sincere vs neutral messages
 - SQLite database (default) with SQLAlchemy models.
 - Dockerfile included.
 
@@ -49,9 +50,33 @@ DISCORD_BOT_TOKEN=YOUR_TOKEN_HERE
 GUILD_ID=123456789012345678
 # SQLite by default — leave as-is or change to Postgres URL later
 DB_URL=sqlite:///./performometer.db
+# OpenAI API key for ChatGPT-based scoring
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 > If you remove `GUILD_ID`, commands will sync globally (may take up to an hour). With `GUILD_ID`, sync is instant for that server.
+
+## ChatGPT Integration
+
+The bot now uses OpenAI's GPT-3.5-turbo to analyze messages for performative-ness. Each message is classified as:
+
+- **PERFORMATIVE**: Trying to present a curated, aesthetic, or "main character" image
+- **SINCERE**: Genuine, casual, or authentic communication  
+- **NEUTRAL**: Neither particularly performative nor sincere
+
+### Scoring System
+- Base score: 50/100
+- Performative messages: +1 point each
+- Sincere messages: -1 point each
+- Neutral messages: 0 points
+- Final score: 50 + (total adjustments × 2), capped at 0-100
+
+### Setup
+1. Get an OpenAI API key from https://platform.openai.com/api-keys
+2. Add `OPENAI_API_KEY=your_key_here` to your `.env` file
+3. Install dependencies: `pip install -r requirements.txt`
+
+The bot will automatically use ChatGPT scoring when the API key is configured.
 
 ---
 
