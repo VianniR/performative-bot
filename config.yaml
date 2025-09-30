@@ -1,0 +1,19 @@
+weights:
+  aesthetic: 0.10
+  text_vibe: 0.35
+  links_media: 0.25
+  self_presentation: 0.10
+  engagement: 0.10
+  sincerity: 0.10
+
+decay:
+  half_life_days: 7
+
+tokens:
+  beverages: [matcha, chai, cortado, oatly]
+  books: ["bell hooks", "Sally Rooney", "Ocean Vuong", Murakami]
+  aesthetic: [liminal, cozy, ghibli, "photo dump", "soft launch"]
+  accessories: [tote, "wired headphones", sambas, birks, "silver ring"]
+  music: [Laufey, Clairo, Boygenius, "Phoebe Bridgers"]
+
+channels_allowlist: []
