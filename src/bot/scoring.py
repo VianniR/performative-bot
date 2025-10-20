@@ -113,13 +113,13 @@ def compute_user_score(session: Session, user_id: int, days: int = 14) -> Tuple[
     )
     return round(score, 1), breakdown
 
-def analyze_message_with_chatgpt(message_text: str, user_display_name: str) -> int:
+def analyze_message_with_chatgpt(message_text: str, user_display_name: str) -> int | None:
     """
     Analyze a message with ChatGPT and return a score adjustment.
     Returns: +1 (performative), 0 (neutral), or -1 (sincere)
     """
-    if not OPENAI_AVAILABLE:
-        return 0
+    if not OPENAI_AVAILABLE or not os.getenv("OPENAI_API_KEY"):
+        return None
         
     try:
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -158,7 +158,7 @@ Respond with only: PERFORMATIVE, NON-PERFORMATIVE, or NEUTRAL
 """
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-5-nano",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=10,
             temperature=0.7
@@ -175,7 +175,7 @@ Respond with only: PERFORMATIVE, NON-PERFORMATIVE, or NEUTRAL
             
     except Exception as e:
         print(f"ChatGPT API error: {e}")
-        return 0  # Default to neutral on error
+        return None  # Signal unavailable so caller can inform user
 
 def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14) -> Tuple[float, Dict]:
     """
@@ -208,8 +208,10 @@ def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14) -
         if not m.text or len(m.text.strip()) < 3:  # Skip very short messages
             continue
             
-        # Analyze with ChatGPT
+        # Analyze with ChatGPT (skip if unavailable)
         score_adjustment = analyze_message_with_chatgpt(m.text, display_name)
+        if score_adjustment is None:
+            continue
         total_score += score_adjustment
         
         # Track categories

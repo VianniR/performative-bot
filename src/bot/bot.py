@@ -99,7 +99,13 @@ async def on_message(message: discord.Message):
                     score_adjustment = analyze_message_with_chatgpt(message.content, message.author.display_name)
                     
                     # Create response based on ChatGPT analysis
-                    if score_adjustment == 1:
+                    if score_adjustment is None:
+                        response_text = (
+                            "⚠️ **Analysis unavailable** — ChatGPT quota or API is unavailable right now. "
+                            "I'll fall back to heuristics for scoring, but live message labels are disabled until service returns."
+                        )
+                        color = 0xf39c12  # Orange warning
+                    elif score_adjustment == 1:
                         response_text = "🎭 **PERFORMATIVE** - This message shows performative male culture vibes"
                         color = 0xff6b6b  # Red for performative
                     elif score_adjustment == -1:
