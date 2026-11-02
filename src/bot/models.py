@@ -7,7 +7,9 @@ from .db import Base
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)  # discord user id (snowflake fits into int64)
+    username = Column(String, nullable=True)  # Discord username for easy lookup
     opted_in = Column(Boolean, default=False, nullable=False)
+    consented_at = Column(DateTime, nullable=True)  # Fresh explicit consent; legacy flags are insufficient.
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -42,4 +44,4 @@ class Score(Base):
     user_id = Column(Integer, primary_key=True)
     window_days = Column(Integer, primary_key=True)
     score = Column(Float, default=0.0, nullable=False)
-    breakdown = Column(JSON, nullable=False, default={})
+    breakdown = Column(JSON, nullable=False, default=dict)

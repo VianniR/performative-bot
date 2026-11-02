@@ -4,6 +4,7 @@ FROM python:3.11-slim
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV DB_URL=sqlite:////app/data/performometer.db
 
 RUN pip install --no-cache-dir --upgrade pip
 

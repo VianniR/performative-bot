@@ -1,11 +1,10 @@
 from __future__ import annotations
-import re, math, os
+import re, os
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
-from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .models import Message, User
+from .models import Message, User, ChannelConfig
 from .config import get_config
 
 try:
@@ -34,21 +33,29 @@ def _token_hits(text: str, tokens: List[str]) -> int:
         hits += len(re.findall(pat, text, flags=re.IGNORECASE))
     return hits
 
-def compute_user_score(session: Session, user_id: int, days: int = 14) -> Tuple[float, Dict]:
-    cfg = get_config(session)
+def eligible_messages(session: Session, user_id: int, days: int, channel_ids):
+    """Fail closed: explicit consent, post-consent content, visible allowed channels."""
+    if not 1 <= days <= 60:
+        raise ValueError("days must be between 1 and 60")
+    user = session.get(User, user_id)
+    if not user or not user.opted_in or user.consented_at is None or not channel_ids:
+        return []
+    start = max(datetime.utcnow() - timedelta(days=days), user.consented_at)
+    return (session.query(Message)
+            .filter(Message.user_id == user_id, Message.created_at >= start,
+                    Message.channel_id.in_(channel_ids),
+                    Message.channel_id.in_(session.query(ChannelConfig.channel_id).filter_by(allowed=True)))
+            .order_by(Message.created_at.desc(), Message.id.desc()).all())
+
+
+def compute_user_score(session: Session, user_id: int, days: int = 14, *, channel_ids=(), guild_id=None) -> Tuple[float, Dict]:
+    cfg = get_config(session, guild_id=guild_id)
     weights = cfg.get("weights", {})
     tokens_cfg = cfg.get("tokens", {})
     half = cfg.get("decay", {}).get("half_life_days", 7)
 
     now = datetime.utcnow()
-    window_start = now - timedelta(days=days)
-
-    msgs: List[Message] = (
-        session.query(Message)
-        .filter(Message.user_id == user_id, Message.created_at >= window_start)
-        .order_by(Message.created_at.desc())
-        .all()
-    )
+    msgs = eligible_messages(session, user_id, days, channel_ids)
     if not msgs:
         return 0.0, {"examples": []}
 
@@ -79,8 +86,6 @@ def compute_user_score(session: Session, user_id: int, days: int = 14) -> Tuple[
         imgs += int(m.images) * w
         reacts += int(m.reactions) * w
         lengths.append(len(m.text or ""))
-        if hits > 0 and len(examples) < 5:
-            examples.append((m.text or "")[:160])
 
     text_vibe = min(1.0, (total_hits / max(total_weight, 1)) / 3.0)
     links_media = min(1.0, (link_domains["open.spotify.com"] + link_domains["goodreads.com"] + link_domains["letterboxd.com"]) / max(total_weight, 1))
@@ -111,19 +116,25 @@ def compute_user_score(session: Session, user_id: int, days: int = 14) -> Tuple[
         weights.get("sincerity", 0)*sincerity +
         weights.get("aesthetic", 0)*aesthetic
     )
-    return round(score, 1), breakdown
+    return round(max(0, min(100, score)), 1), breakdown
 
-def analyze_message_with_chatgpt(message_text: str, user_display_name: str) -> int | None:
+def analyze_message_with_chatgpt(message_text: str, user_display_name: str = "") -> int | None:
     """
     Analyze a message with ChatGPT and return a score adjustment.
-    Returns: +1 (performative), 0 (neutral), or -1 (sincere)
+    Returns: +1 (performative), 0 (neutral), or -1 (non-performative).
     """
     if not OPENAI_AVAILABLE or not os.getenv("OPENAI_API_KEY"):
         return None
-        
+
+    # Quick heuristic check for fraternities to ensure consistency
+    text_lower = message_text.lower()
+    if any(word in text_lower for word in ['frat', 'fraternity', 'sorority', 'greek life']):
+        return -1  # Always NON-PERFORMATIVE for fraternities
+
+    client = None
     try:
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=15.0, max_retries=0)
+
         prompt = f"""
 Analyze this Discord message for "performative male" culture vs "toxic masculinity":
 
@@ -145,6 +156,8 @@ NON-PERFORMATIVE indicators (respond with "NON-PERFORMATIVE"):
 - Toxic masculinity traits
 - "Sigma male" or "red pill" content
 - Dismissive of emotions or vulnerability
+- Fraternities and sororities (frat, sorority, Greek life, fraternity)
+- Stereotypically male attitudes
 
 NEUTRAL (respond with "NEUTRAL"):
 - Normal conversation
@@ -158,62 +171,56 @@ Respond with only: PERFORMATIVE, NON-PERFORMATIVE, or NEUTRAL
 """
 
         response = client.chat.completions.create(
-            model="gpt-5-nano",
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=10,
-            temperature=0.7
+            temperature=0.7,
+            store=False
         )
-        
+
         result = response.choices[0].message.content.strip().upper()
-        
+
         if result == "PERFORMATIVE":
             return 1
         elif result == "NON-PERFORMATIVE":
             return -1
         else:  # NEUTRAL or any other response
             return 0
-            
-    except Exception as e:
-        print(f"ChatGPT API error: {e}")
-        return None  # Signal unavailable so caller can inform user
 
-def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14) -> Tuple[float, Dict]:
+    except Exception:
+        # Exception bodies may contain request content or credentials.
+        return None  # Signal unavailable so caller can inform user
+    finally:
+        if client is not None:
+            client.close()
+
+def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14, *, channel_ids=(), guild_id=None) -> Tuple[float, Dict]:
     """
     Compute user score using ChatGPT analysis instead of heuristics.
     """
-    now = datetime.utcnow()
-    window_start = now - timedelta(days=days)
-    
-    msgs: List[Message] = (
-        session.query(Message)
-        .filter(Message.user_id == user_id, Message.created_at >= window_start)
-        .order_by(Message.created_at.desc())
-        .all()
-    )
-    
+    msgs = eligible_messages(session, user_id, days, channel_ids)
     if not msgs:
-        return 0.0, {"examples": [], "chatgpt_analysis": "No messages"}
-    
-    # Get user display name for context
-    user = session.get(User, user_id)
-    display_name = f"User {user_id}"  # Fallback
-    
+        return 0.0, {"total_messages": 0, "chatgpt_analysis": "No eligible messages"}
+
     total_score = 0
     performative_count = 0
     non_performative_count = 0
     neutral_count = 0
     examples = []
-    
-    for m in msgs:
+
+    # Analyze most recent messages consistently (last 10 messages)
+    messages_to_analyze = msgs[:10]
+
+    for m in messages_to_analyze:
         if not m.text or len(m.text.strip()) < 3:  # Skip very short messages
             continue
-            
+
         # Analyze with ChatGPT (skip if unavailable)
-        score_adjustment = analyze_message_with_chatgpt(m.text, display_name)
+        score_adjustment = analyze_message_with_chatgpt(m.text)
         if score_adjustment is None:
             continue
         total_score += score_adjustment
-        
+
         # Track categories
         if score_adjustment == 1:
             performative_count += 1
@@ -221,15 +228,13 @@ def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14) -
             non_performative_count += 1
         else:
             neutral_count += 1
-            
-        # Collect examples
-        if len(examples) < 5:
-            examples.append(f"{m.text[:100]}... (score: {score_adjustment})")
-    
-    # Convert to 0-100 scale
-    # Base score of 50, then adjust based on ChatGPT analysis
-    final_score = max(0, min(100, 50 + (total_score * 2)))
-    
+
+
+    # Convert to 0-100 scale with more reasonable scaling
+    # Base score of 50, then adjust based on ChatGPT analysis (less aggressive)
+    final_score = max(0, min(100, 50 + (total_score * 1.5)))
+
+    analyzed = performative_count + non_performative_count + neutral_count
     breakdown = {
         "total_messages": len(msgs),
         "performative_messages": performative_count,
@@ -237,7 +242,14 @@ def compute_user_score_chatgpt(session: Session, user_id: int, days: int = 14) -
         "neutral_messages": neutral_count,
         "raw_score": total_score,
         "examples": examples,
-        "chatgpt_analysis": f"Analyzed {len(msgs)} messages"
+        "chatgpt_analysis": f"Analyzed {analyzed} of {len(messages_to_analyze)} sampled messages",
+        "latest_message_id": msgs[0].id if msgs else None
     }
-    
+
+    # Legacy cache lacks channel/consent scope and expiry; never read or overwrite it.
+    if not analyzed:
+        fallback, details = compute_user_score(session, user_id, days, channel_ids=channel_ids, guild_id=guild_id)
+        details.update(breakdown)
+        details["chatgpt_analysis"] = "LLM unavailable or no substantial text; heuristic fallback"
+        return fallback, details
     return round(final_score, 1), breakdown

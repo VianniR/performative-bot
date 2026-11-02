@@ -6,3 +6,16 @@ __pycache__/
 data/
 dist/
 build/
+.idea/
+.DS_Store
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+.pytest_cache/
+.coverage
+htmlcov/
+.cursor/
