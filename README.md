@@ -70,9 +70,9 @@ OPENAI_API_KEY=your_openai_api_key_here
 
 The bot analyzes every message in real-time using OpenAI's GPT-5 Nano (ultra-cost-effective model). Each message gets classified as:
 
-- **🎭 PERFORMATIVE**: Shows performative male culture vibes (matcha, Clairo, "in my feels", aesthetic content)
-- **💪 NON-PERFORMATIVE**: Shows toxically masculine vibes (dark humor, misogyny, "sigma male" content)  
-- **😐 NEUTRAL**: Neither performative nor non-performative
+- **PERFORMATIVE**: Shows performative male culture vibes (matcha, Clairo, "in my feels", aesthetic content)
+- **NON-PERFORMATIVE**: Shows toxically masculine vibes (dark humor, misogyny, "sigma male" content)  
+- **NEUTRAL**: Neither performative nor non-performative
 
 ### How It Works
 1. **User sends message** in an allowed channel
@@ -93,9 +93,9 @@ The bot analyzes every message in real-time using OpenAI's GPT-5 Nano (ultra-cos
 3. **Add to .env**: `OPENAI_API_KEY=your_key_here`
 4. **Install dependencies**: `pip install -r requirements.txt`
 
-**💰 Cost-Effective**: Uses GPT-5 Nano ($0.05/1M input tokens, $0.40/1M output tokens) - ~90% cheaper than GPT-3.5-turbo!
+**Cost-Effective**: Uses GPT-5 Nano ($0.05/1M input tokens, $0.40/1M output tokens) - ~90% cheaper than GPT-3.5-turbo!
 
-**⚠️ Important**: You need a valid OpenAI API key with billing set up. The bot will show quota errors without it.
+**Important**: You need a valid OpenAI API key with billing set up. The bot will show quota errors without it.
 
 ---
 
